@@ -162,7 +162,7 @@ static void dns_cache_init(void) {
     for (int i = 0; i < CACHE_MUTEX_COUNT; i++) {
         pthread_mutex_init(&cache_mutex[i], NULL);
     }
-    lookup_queue = dispatch_queue_create("com.gammesofts.ios.adblock.lookup", DISPATCH_QUEUE_CONCURRENT);
+    lookup_queue = dispatch_queue_create("com.gamesofts.ios.adblock.lookup", DISPATCH_QUEUE_CONCURRENT);
 }
 
 static int dns_cache_lookup(const char *domain, int *blocked) {
@@ -400,13 +400,10 @@ static int resolve_address_to_hostname(const struct sockaddr *addr, char *hostna
     hints.ai_socktype = SOCK_STREAM;
     
     int error = getaddrinfo(ipstr, NULL, &hints, &result);
-    if (error != 0 || !result) {
-        strlcpy(hostname, ipstr, hostlen);
-        return 1;
-    }
-    
     NSString *canonName = nil;
-    if (result->ai_canonname && strlen(result->ai_canonname) > 0) {
+    if (error != 0 || !result) {
+        canonName = [NSString stringWithUTF8String:ipstr];
+    } else if (result->ai_canonname && strlen(result->ai_canonname) > 0) {
         canonName = [NSString stringWithUTF8String:result->ai_canonname];
     } else {
         canonName = [NSString stringWithUTF8String:ipstr];
@@ -417,7 +414,7 @@ static int resolve_address_to_hostname(const struct sockaddr *addr, char *hostna
     pthread_mutex_unlock(&resolve_mutex);
     
     strlcpy(hostname, [canonName UTF8String], hostlen);
-    freeaddrinfo(result);
+    if (result) freeaddrinfo(result);
     return 1;
 }
 
@@ -720,14 +717,28 @@ void my_NSNetServiceResolve(id self, SEL _cmd) {
     ((void (*)(id, SEL))orig_NSNetServiceResolve)(self, _cmd);
 }
 
-static void blocked_task_resume(id self, SEL _cmd) {
-    (void)self;
-    (void)_cmd;
+static void blocked_task_cancel(id __unused self, SEL __unused _cmd) {
+    if ([self respondsToSelector:@selector(setValue:forKey:)]) {
+        NSError *error = [NSError errorWithDomain:NSURLErrorDomain 
+                                             code:NSURLErrorCannotConnectToHost 
+                                         userInfo:@{NSLocalizedDescriptionKey: @"Connection blocked by content filter"}];
+        [self setValue:error forKey:@"error"];
+    }
 }
 
-static void blocked_task_cancel(id self, SEL _cmd) {
-    (void)self;
-    (void)_cmd;
+static void blocked_task_resume(id self, SEL _cmd) {
+    blocked_task_cancel(self, _cmd);
+    if ([self respondsToSelector:@selector(delegate)] && [self delegate]) {
+        id delegate = [self delegate];
+        if ([delegate respondsToSelector:@selector(URLSession:task:didCompleteWithError:)]) {
+            NSError *error = [NSError errorWithDomain:NSURLErrorDomain
+                                                 code:NSURLErrorCannotConnectToHost
+                                             userInfo:@{NSLocalizedDescriptionKey: @"Connection blocked by content filter"}];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [delegate URLSession:[NSURLSession sharedSession] task:self didCompleteWithError:error];
+            });
+        }
+    }
 }
 
 static id createBlockedURLSessionTask(void) {
@@ -739,6 +750,7 @@ static id createBlockedURLSessionTask(void) {
         objc_registerClassPair(BlockedURLSessionTaskClass);
     }
     id task = [[BlockedURLSessionTaskClass alloc] init];
+    [task cancel];
     return task;
 }
 
@@ -913,8 +925,15 @@ id my_NSURLConnectionConnectionWithRequestDelegate(Class self, SEL _cmd, NSURLRe
 
 void my_UIWebViewLoadRequest(id self, SEL _cmd, NSURLRequest *request) {
     if (is_url_blocked(request.URL)) {
-        NSString *html = @"<html />";
-        [self loadHTMLString:html baseURL:nil];
+        [self stopLoading];
+        id delegate = [self delegate];
+        if (delegate && [delegate respondsToSelector:@selector(webView:didFailLoadWithError:)]) {
+            NSError *error = [NSError errorWithDomain:NSURLErrorDomain
+                                                 code:NSURLErrorCannotConnectToHost
+                                             userInfo:@{NSLocalizedDescriptionKey: @"Connection blocked by content filter"}];
+            [delegate webView:self didFailLoadWithError:error];
+        }
+        [self loadHTMLString:@"" baseURL:nil];
         return;
     }
     ((void (*)(id, SEL, NSURLRequest *))orig_UIWebViewLoadRequest)(self, _cmd, request);
@@ -922,8 +941,15 @@ void my_UIWebViewLoadRequest(id self, SEL _cmd, NSURLRequest *request) {
 
 void my_WKWebViewLoadRequest(id self, SEL _cmd, NSURLRequest *request) {
     if (is_url_blocked(request.URL)) {
-        NSString *html = @"<html />";
-        [self loadHTMLString:html baseURL:nil];
+        [self stopLoading];
+        id navigationDelegate = [self valueForKey:@"navigationDelegate"];
+        if (navigationDelegate && [navigationDelegate respondsToSelector:@selector(webView:didFailNavigation:withError:)]) {
+            NSError *error = [NSError errorWithDomain:NSURLErrorDomain
+                                                 code:NSURLErrorCannotConnectToHost
+                                             userInfo:@{NSLocalizedDescriptionKey: @"Connection blocked by content filter"}];
+            [navigationDelegate webView:self didFailNavigation:nil withError:error];
+        }
+        [self loadHTMLString:@"" baseURL:nil];
         return;
     }
     ((void (*)(id, SEL, NSURLRequest *))orig_WKWebViewLoadRequest)(self, _cmd, request);
