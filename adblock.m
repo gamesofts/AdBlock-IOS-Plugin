@@ -49,7 +49,6 @@ static _Atomic(dns_cache_entry_t *) *dns_cache = NULL;
 static uint64_t cache_access_counter = 0;
 static pthread_mutex_t cache_mutex[CACHE_MUTEX_COUNT];
 static pthread_once_t init_once = PTHREAD_ONCE_INIT;
-static dispatch_queue_t lookup_queue;
 static RadixNode *domain_trie_root = NULL;
 static uint8_t *bloom_filter = NULL;
 
@@ -162,7 +161,6 @@ static void dns_cache_init(void) {
     for (int i = 0; i < CACHE_MUTEX_COUNT; i++) {
         pthread_mutex_init(&cache_mutex[i], NULL);
     }
-    lookup_queue = dispatch_queue_create("com.gamesofts.ios.adblock.lookup", DISPATCH_QUEUE_CONCURRENT);
 }
 
 static int dns_cache_lookup(const char *domain, int *blocked) {
@@ -328,16 +326,7 @@ static int is_domain_blocked(const char *hostname) {
         return 0;
     }
     
-    p = hostname;
-    int blocked = 0;
-    while (p) {
-        if (search_domain(domain_trie_root, p)) {
-            blocked = 1;
-            break;
-        }
-        p = strchr(p, '.');
-        if (p) p++;
-    }
+    int blocked = search_domain(domain_trie_root, hostname);
     dns_cache_insert(hostname, blocked);
     return blocked;
 }
