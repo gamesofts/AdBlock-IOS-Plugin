@@ -359,7 +359,12 @@ static int extract_host_from_sockaddr(const struct sockaddr *addr, char *host, s
 
 static int resolve_address_to_hostname(const struct sockaddr *addr, char *hostname, size_t hostlen) {
     if (!addr || !hostname || hostlen < 1) return 0;
-    static pthread_mutex_t resolve_mutex = PTHREAD_MUTEX_INITIALIZER;
+    
+    char ipstr[INET6_ADDRSTRLEN] = {0};
+    if (!extract_host_from_sockaddr(addr, ipstr, sizeof(ipstr))) {
+        return 0;
+    }
+    NSString *ipKey = [NSString stringWithUTF8String:ipstr];
     static NSCache *resolveCache = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -367,20 +372,11 @@ static int resolve_address_to_hostname(const struct sockaddr *addr, char *hostna
         resolveCache.countLimit = DNS_CACHE_SIZE;
     });
     
-    char ipstr[INET6_ADDRSTRLEN] = {0};
-    if (!extract_host_from_sockaddr(addr, ipstr, sizeof(ipstr))) {
-        return 0;
-    }
-    NSString *ipKey = [NSString stringWithUTF8String:ipstr];
-    
-    pthread_mutex_lock(&resolve_mutex);
     NSString *cachedName = [resolveCache objectForKey:ipKey];
     if (cachedName) {
         strlcpy(hostname, [cachedName UTF8String], hostlen);
-        pthread_mutex_unlock(&resolve_mutex);
         return 1;
     }
-    pthread_mutex_unlock(&resolve_mutex);
     
     struct addrinfo hints, *result = NULL;
     memset(&hints, 0, sizeof(hints));
@@ -398,10 +394,7 @@ static int resolve_address_to_hostname(const struct sockaddr *addr, char *hostna
         canonName = [NSString stringWithUTF8String:ipstr];
     }
     
-    pthread_mutex_lock(&resolve_mutex);
     [resolveCache setObject:canonName forKey:ipKey];
-    pthread_mutex_unlock(&resolve_mutex);
-    
     strlcpy(hostname, [canonName UTF8String], hostlen);
     if (result) freeaddrinfo(result);
     return 1;
