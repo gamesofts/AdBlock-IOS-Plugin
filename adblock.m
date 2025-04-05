@@ -90,6 +90,7 @@ static IMP orig_NSURLConnectionInitWithRequestStartImmediately = NULL;
 static IMP orig_NSURLConnectionConnectionWithRequestDelegate = NULL;
 static IMP orig_WKWebViewLoadRequest = NULL;
 
+__attribute__((always_inline))
 static inline void CFStringToBuffer(CFStringRef string, char *buffer, size_t bufferSize) {
     if (string && buffer && bufferSize > 0) {
         if (!CFStringGetCString(string, buffer, bufferSize, kCFStringEncodingUTF8)) {
@@ -625,12 +626,16 @@ void my_NSNetServiceResolve(id self, SEL _cmd) {
     ((void (*)(id, SEL))orig_NSNetServiceResolve)(self, _cmd);
 }
 
+static inline NSError *blockedError(void) {
+    return [NSError errorWithDomain:NSURLErrorDomain
+                               code:NSURLErrorCannotConnectToHost
+                           userInfo:@{NSLocalizedDescriptionKey: @"Connection blocked by content filter"}];
+}
+
+
 static void blocked_task_cancel(id __unused self, SEL __unused _cmd) {
     if ([self respondsToSelector:@selector(setValue:forKey:)]) {
-        NSError *error = [NSError errorWithDomain:NSURLErrorDomain 
-                                             code:NSURLErrorCannotConnectToHost 
-                                         userInfo:@{NSLocalizedDescriptionKey: @"Connection blocked by content filter"}];
-        [self setValue:error forKey:@"error"];
+        [self setValue:blockedError() forKey:@"error"];
     }
 }
 
@@ -639,11 +644,8 @@ static void blocked_task_resume(id self, SEL _cmd) {
     if ([self respondsToSelector:@selector(delegate)] && [self delegate]) {
         id delegate = [self delegate];
         if ([delegate respondsToSelector:@selector(URLSession:task:didCompleteWithError:)]) {
-            NSError *error = [NSError errorWithDomain:NSURLErrorDomain
-                                                 code:NSURLErrorCannotConnectToHost
-                                             userInfo:@{NSLocalizedDescriptionKey: @"Connection blocked by content filter"}];
             dispatch_async(dispatch_get_main_queue(), ^{
-                [delegate URLSession:[NSURLSession sharedSession] task:self didCompleteWithError:error];
+                [delegate URLSession:[NSURLSession sharedSession] task:self didCompleteWithError:blockedError()];
             });
         }
     }
@@ -672,11 +674,8 @@ id my_NSURLSessionDataTaskWithURL(id self, SEL _cmd, NSURL *url) {
 id my_NSURLSessionDataTaskWithURLCompletion(id self, SEL _cmd, NSURL *url, void (^completionHandler)(NSData *, NSURLResponse *, NSError *)) {
     if (is_url_blocked(url)) {
         if (completionHandler) {
-            NSError *error = [NSError errorWithDomain:NSURLErrorDomain
-                                                 code:NSURLErrorCannotConnectToHost
-                                             userInfo:@{NSLocalizedDescriptionKey: @"Connection blocked by content filter"}];
             dispatch_async(dispatch_get_main_queue(), ^{
-                completionHandler(nil, nil, error);
+                completionHandler(nil, nil, blockedError());
             });
         }
         return createBlockedURLSessionTask();
@@ -694,11 +693,8 @@ id my_NSURLSessionDataTaskWithRequest(id self, SEL _cmd, NSURLRequest *request) 
 id my_NSURLSessionDataTaskWithRequestCompletion(id self, SEL _cmd, NSURLRequest *request, void (^completionHandler)(NSData *, NSURLResponse *, NSError *)) {
     if (is_url_blocked(request.URL)) {
         if (completionHandler) {
-            NSError *error = [NSError errorWithDomain:NSURLErrorDomain
-                                                 code:NSURLErrorCannotConnectToHost
-                                             userInfo:@{NSLocalizedDescriptionKey: @"Connection blocked by content filter"}];
             dispatch_async(dispatch_get_main_queue(), ^{
-                completionHandler(nil, nil, error);
+                completionHandler(nil, nil, blockedError());
             });
         }
         return createBlockedURLSessionTask();
@@ -776,9 +772,7 @@ id my_NSURLSessionWebSocketTaskWithURLProtocols(id self, SEL _cmd, NSURL *url, N
 static NSData* my_NSURLConnectionSendSynchronousRequest(Class self, SEL _cmd, NSURLRequest *request, NSURLResponse **response, NSError **error) {
     if (is_url_blocked(request.URL)) {
         if (error) {
-            *error = [NSError errorWithDomain:NSURLErrorDomain
-                                         code:NSURLErrorCannotConnectToHost
-                                     userInfo:@{NSLocalizedDescriptionKey: @"Connection blocked by content filter"}];
+            *error = blockedError();
         }
         return nil;
     }
@@ -792,12 +786,9 @@ void my_NSURLConnectionSendAsyncRequest(Class self, SEL _cmd, NSURLRequest *requ
         queue = [NSOperationQueue mainQueue];
     }
     if (is_url_blocked(request.URL)) {
-        NSError *error = [NSError errorWithDomain:NSURLErrorDomain
-                                             code:NSURLErrorCannotConnectToHost
-                                         userInfo:@{NSLocalizedDescriptionKey: @"Connection blocked by content filter"}];
         if (completionHandler) {
             [queue addOperationWithBlock:^{
-                completionHandler(nil, nil, error);
+                completionHandler(nil, nil, blockedError());
             }];
         }
         return;
@@ -832,10 +823,7 @@ void my_WKWebViewLoadRequest(id self, SEL _cmd, NSURLRequest *request) {
         [self stopLoading];
         id navigationDelegate = [self valueForKey:@"navigationDelegate"];
         if (navigationDelegate && [navigationDelegate respondsToSelector:@selector(webView:didFailNavigation:withError:)]) {
-            NSError *error = [NSError errorWithDomain:NSURLErrorDomain
-                                                 code:NSURLErrorCannotConnectToHost
-                                             userInfo:@{NSLocalizedDescriptionKey: @"Connection blocked by content filter"}];
-            [navigationDelegate webView:self didFailNavigation:nil withError:error];
+            [navigationDelegate webView:self didFailNavigation:nil withError:blockedError()];
         }
         [(WKWebView *)self loadHTMLString:@"" baseURL:nil];
         return;
