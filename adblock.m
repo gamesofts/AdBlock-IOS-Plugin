@@ -83,11 +83,8 @@ static IMP orig_NSURLSessionStreamTaskWithHostNamePort = NULL;
 static IMP orig_NSURLSessionStreamTaskWithNetService = NULL;
 static IMP orig_NSURLSessionWebSocketTaskWithURL = NULL;
 static IMP orig_NSURLSessionWebSocketTaskWithURLProtocols = NULL;
-static IMP orig_NSURLConnectionSendSynchronousRequest = NULL;
-static IMP orig_NSURLConnectionSendAsynchronousRequest = NULL;
-static IMP orig_NSURLConnectionInitWithRequest = NULL;
-static IMP orig_NSURLConnectionInitWithRequestStartImmediately = NULL;
-static IMP orig_NSURLConnectionConnectionWithRequestDelegate = NULL;
+static IMP orig_NSURLSessionWebSocketTaskWithRequest = NULL;
+static IMP orig_NSURLSessionWebSocketTaskWithRequestProtocols = NULL;
 static IMP orig_WKWebViewLoadRequest = NULL;
 
 __attribute__((always_inline))
@@ -550,25 +547,6 @@ Boolean my_CFNetServiceResolveWithTimeout(CFNetServiceRef theService,
     return orig_CFNetServiceResolveWithTimeout(theService, timeout, error);
 }
 
-CFReadStreamRef my_CFStreamCreateForHTTPRequest(CFAllocatorRef alloc, CFHTTPMessageRef request) {
-    if (request) {
-        CFURLRef url = CFHTTPMessageCopyRequestURL(request);
-        if (url) {
-            CFStringRef host = CFURLCopyHostName(url);
-            if (host) {
-                if (is_host_blocked(host)) {
-                    CFRelease(host);
-                    CFRelease(url);
-                    return NULL;
-                }
-                CFRelease(host);
-            }
-            CFRelease(url);
-        }
-    }
-    return orig_CFStreamCreateForHTTPRequest(alloc, request);
-}
-
 void my_CFStreamCreatePairWithSocketToHost(CFAllocatorRef alloc, CFStringRef host, UInt32 port,
                                            CFReadStreamRef  _Nullable *readStream,
                                            CFWriteStreamRef _Nullable *writeStream) {
@@ -580,19 +558,34 @@ void my_CFStreamCreatePairWithSocketToHost(CFAllocatorRef alloc, CFStringRef hos
     orig_CFStreamCreatePairWithSocketToHost(alloc, host, port, readStream, writeStream);
 }
 
+CFReadStreamRef my_CFStreamCreateForHTTPRequest(CFAllocatorRef alloc, CFHTTPMessageRef request) {
+    if (request) {
+        CFURLRef url = CFHTTPMessageCopyRequestURL(request);
+        if (url) {
+            CFStringRef host = CFURLCopyHostName(url);
+            if (host && is_host_blocked(host)) {
+                CFRelease(host);
+                CFRelease(url);
+                return NULL;
+            }
+            if (host) CFRelease(host);
+            CFRelease(url);
+        }
+    }
+    return orig_CFStreamCreateForHTTPRequest(alloc, request);
+}
+
 CFHTTPMessageRef my_CFHTTPMessageCreateRequest(CFAllocatorRef alloc,
                                                CFStringRef requestMethod,
                                                CFURLRef url,
                                                CFStringRef httpVersion) {
     if (url) {
         CFStringRef host = CFURLCopyHostName(url);
-        if (host) {
-            if (is_host_blocked(host)) {
-                CFRelease(host);
-                return NULL;
-            }
+        if (host && is_host_blocked(host)) {
             CFRelease(host);
+            return NULL;
         }
+        if (host) CFRelease(host);
     }
     return orig_CFHTTPMessageCreateRequest(alloc, requestMethod, url, httpVersion);
 }
@@ -769,53 +762,18 @@ id my_NSURLSessionWebSocketTaskWithURLProtocols(id self, SEL _cmd, NSURL *url, N
     return ((id (*)(id, SEL, NSURL *, NSArray *))orig_NSURLSessionWebSocketTaskWithURLProtocols)(self, _cmd, url, protocols);
 }
 
-static NSData* my_NSURLConnectionSendSynchronousRequest(Class self, SEL _cmd, NSURLRequest *request, NSURLResponse **response, NSError **error) {
+id my_NSURLSessionWebSocketTaskWithRequest(id self, SEL _cmd, NSURLRequest *request) {
     if (is_url_blocked(request.URL)) {
-        if (error) {
-            *error = blockedError();
-        }
-        return nil;
+        return createBlockedURLSessionTask();
     }
-    return ((NSData* (*)(Class, SEL, NSURLRequest *, NSURLResponse **, NSError **))orig_NSURLConnectionSendSynchronousRequest)(self, _cmd, request, response, error);
+    return ((id (*)(id, SEL, NSURLRequest *))orig_NSURLSessionWebSocketTaskWithRequest)(self, _cmd, request);
 }
 
-void my_NSURLConnectionSendAsyncRequest(Class self, SEL _cmd, NSURLRequest *request,
-                                       NSOperationQueue *queue,
-                                       void (^completionHandler)(NSURLResponse*, NSData*, NSError*)) {
-    if (!queue) {
-        queue = [NSOperationQueue mainQueue];
-    }
+id my_NSURLSessionWebSocketTaskWithRequestProtocols(id self, SEL _cmd, NSURLRequest *request, NSArray *protocols) {
     if (is_url_blocked(request.URL)) {
-        if (completionHandler) {
-            [queue addOperationWithBlock:^{
-                completionHandler(nil, nil, blockedError());
-            }];
-        }
-        return;
+        return createBlockedURLSessionTask();
     }
-    ((void (*)(Class, SEL, NSURLRequest *, NSOperationQueue *, void (^)(NSURLResponse*, NSData*, NSError*)))orig_NSURLConnectionSendAsynchronousRequest)
-        (self, _cmd, request, queue, completionHandler);
-}
-
-id my_NSURLConnectionInitWithRequest(id self, SEL _cmd, NSURLRequest *request, id delegate) {
-    if (is_url_blocked(request.URL)) {
-        return nil;
-    }
-    return ((id (*)(id, SEL, NSURLRequest *, id))orig_NSURLConnectionInitWithRequest)(self, _cmd, request, delegate);
-}
-
-id my_NSURLConnectionInitWithRequestStartImmediately(id self, SEL _cmd, NSURLRequest *request, id delegate, BOOL startImmediately) {
-    if (is_url_blocked(request.URL)) {
-        return nil;
-    }
-    return ((id (*)(id, SEL, NSURLRequest *, id, BOOL))orig_NSURLConnectionInitWithRequestStartImmediately)(self, _cmd, request, delegate, startImmediately);
-}
-
-id my_NSURLConnectionConnectionWithRequestDelegate(Class self, SEL _cmd, NSURLRequest *request, id delegate) {
-    if (is_url_blocked(request.URL)) {
-        return nil;
-    }
-    return ((id (*)(Class, SEL, NSURLRequest *, id))orig_NSURLConnectionConnectionWithRequestDelegate)(self, _cmd, request, delegate);
+    return ((id (*)(id, SEL, NSURLRequest *, NSArray *))orig_NSURLSessionWebSocketTaskWithRequestProtocols)(self, _cmd, request, protocols);
 }
 
 void my_WKWebViewLoadRequest(id self, SEL _cmd, NSURLRequest *request) {
@@ -833,13 +791,6 @@ void my_WKWebViewLoadRequest(id self, SEL _cmd, NSURLRequest *request) {
 
 static void swizzleMethod(Class class, SEL originalSelector, IMP replacement, IMP *originalMethod) {
     Method method = class_getInstanceMethod(class, originalSelector);
-    if (method) {
-        *originalMethod = method_setImplementation(method, replacement);
-    }
-}
-
-static void swizzleClassMethod(Class class, SEL originalSelector, IMP replacement, IMP *originalMethod) {
-    Method method = class_getClassMethod(class, originalSelector);
     if (method) {
         *originalMethod = method_setImplementation(method, replacement);
     }
@@ -953,30 +904,14 @@ static void adblock_init(void) {
                       sel_registerName("webSocketTaskWithURL:protocols:"),
                       (IMP)my_NSURLSessionWebSocketTaskWithURLProtocols,
                       &orig_NSURLSessionWebSocketTaskWithURLProtocols);
-    }
-
-    Class urlConnectionClass = objc_getClass("NSURLConnection");
-    if (urlConnectionClass) {
-        swizzleClassMethod(urlConnectionClass,
-                          sel_registerName("sendSynchronousRequest:returningResponse:error:"),
-                          (IMP)my_NSURLConnectionSendSynchronousRequest,
-                          &orig_NSURLConnectionSendSynchronousRequest);
-        swizzleClassMethod(urlConnectionClass,
-                          sel_registerName("sendAsynchronousRequest:queue:completionHandler:"),
-                          (IMP)my_NSURLConnectionSendAsyncRequest,
-                          &orig_NSURLConnectionSendAsynchronousRequest);
-        swizzleMethod(urlConnectionClass,
-                          sel_registerName("initWithRequest:delegate:"),
-                          (IMP)my_NSURLConnectionInitWithRequest,
-                          &orig_NSURLConnectionInitWithRequest);
-        swizzleMethod(urlConnectionClass,
-                          sel_registerName("initWithRequest:delegate:startImmediately:"),
-                          (IMP)my_NSURLConnectionInitWithRequestStartImmediately,
-                          &orig_NSURLConnectionInitWithRequestStartImmediately);
-        swizzleClassMethod(urlConnectionClass,
-                          sel_registerName("connectionWithRequest:delegate:"),
-                          (IMP)my_NSURLConnectionConnectionWithRequestDelegate,
-                          &orig_NSURLConnectionConnectionWithRequestDelegate);
+        swizzleMethod(urlSessionClass,
+                      sel_registerName("webSocketTaskWithRequest:"),
+                      (IMP)my_NSURLSessionWebSocketTaskWithRequest,
+                      &orig_NSURLSessionWebSocketTaskWithRequest);
+        swizzleMethod(urlSessionClass,
+                      sel_registerName("webSocketTaskWithRequest:protocols:"),
+                      (IMP)my_NSURLSessionWebSocketTaskWithRequestProtocols,
+                      &orig_NSURLSessionWebSocketTaskWithRequestProtocols);
     }
     
     Class wkWebViewClass = objc_getClass("WKWebView");
